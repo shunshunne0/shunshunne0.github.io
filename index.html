@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+.parent {
+    width: 720px;
+    height: 0px;
+    position: relative; /*relativeに設定*/
+    padding: 0em 0em;
+    margin:0;
+}
+.l1 { 
+    top: 0px;
+    left: 0px;
+    width: 640px; 
+    height: 480px;
+    padding: 0em 0em;
+}
+.l2 {
+    top: 0px;   /*動的に変更されるので適当*/
+    left: 0px;  /*動的に変更されるので適当*/
+    width: 640px; /*撮影枠サイズ*/ 
+    height: 480px; /*撮影枠サイズ*/
+    position: absolute; /*absoluteに設定*/
+    padding: 0em 0em;
+}
+
+</style>
+    <meta charset="UTF-8">
+    <title>作業者側</title>
+</head>
+<body>
+    <p>ID: <span id="my-id"></span></p>
+    <div>
+      room name: <input id="room-name" type="text" />
+      <button id="join">join</button>
+      <button id="leave">leave</button>
+    </div>
+    <div class="parent" width="640">
+        <div class="l1">
+        <video id="local-video" width="640" height="480" muted playsinline></video>
+        </div>
+        <div class="l2">
+        <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+    </div>
+        <video id="player" playsinline autoplay ></video>
+    <div id="button-area"></div>
+    <!-- OpenCV -->
+    <script src="https://docs.opencv.org/4.10.0/opencv.js"></script>
+    <!-- Mediapipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <!-- Skyway -->
+    <script src="https://cdn.jsdelivr.net/npm/@skyway-sdk/room/dist/skyway_room-latest.js"></script>
+    <script>
+        const { nowInSec, SkyWayAuthToken, SkyWayContext, SkyWayRoom, SkyWayStreamFactory, uuidV4 } = skyway_room;
+
+        const buttonArea = document.getElementById("button-area");
+        const remoteMediaArea = document.getElementById("remote-media-area");
+        const roomNameInput = document.getElementById("room-name");
+        const myId = document.getElementById("my-id");
+        const joinButton = document.getElementById("join");
+        const leaveButton = document.getElementById('leave');
+
+        const token = new SkyWayAuthToken({
+            jti: uuidV4(),
+            iat: nowInSec(),
+            exp: nowInSec() + 60 * 60 * 24,
+            version: 3,
+            scope: {
+                appId: "af868855-f897-4dd2-9098-512871f59642",
+                rooms: [
+                    {
+                        name: "*",
+                        methods: ["create", "close", "updateMetadata"],
+                        member: {
+                            name: "*",
+                            methods: ["publish", "subscribe", "updateMetadata"],
+                        },
+                    },
+                ],
+            },
+        }).encode("wwAmiNdsFQnwnsBfsuTTYhOEgKEpfeuAemIuM06MPo8=");
+
+        (async () => {
+            const localVideo = document.getElementById("local-video");
+            const { audio, video } = await SkyWayStreamFactory.createMicrophoneAudioAndCameraStream();
+
+            video.attach(localVideo);
+            await localVideo.play();
+
+            joinButton.onclick = async () => {
+                if (roomNameInput.value === "") return;
+
+                const context = await SkyWayContext.Create(token);
+                const room = await SkyWayRoom.FindOrCreate(context, {
+                    type: "p2p",
+                    name: roomNameInput.value,
+                });
+
+                const me = await room.join();
+                myId.textContent = me.id;
+                await me.publish(audio);
+                await me.publish(video);
+
+                const subscribeAndAttach = (publication) => {
+                    if (publication.publisher.id === me.id) return;
+
+                    const subscribeButton = document.createElement("button");
+                    subscribeButton.id = `subscribe-button-${publication.id}`;
+                    subscribeButton.textContent = `${publication.publisher.id}: ${publication.contentType}`;
+                    buttonArea.appendChild(subscribeButton);
+
+                    subscribeButton.onclick = async () => {
+                        const { stream } = await me.subscribe(publication.id);
+                        let newMedia;
+                        switch (stream.track.kind) {
+                            case "video":
+                                newMedia = document.createElement("video");
+                                newMedia.playsInline = true;
+                                newMedia.autoplay = true;
+
+                                break;
+                            case "audio":
+                                newMedia = document.createElement("audio");
+                                newMedia.controls = true;
+                                newMedia.autoplay = true;
+                                break;
+                            default:
+                                return;
+                        }
+                        newMedia.id = `media-${publication.id}`;
+                        stream.attach(player);
+                    };
+                };
+
+                room.publications.forEach(subscribeAndAttach);
+                room.onStreamPublished.add((e) => {
+                    subscribeAndAttach(e.publication);
+                });
+
+                leaveButton.onclick = async () => {
+                    await me.leave();
+                    await room.dispose();
+                    myId.textContent = "";
+                    buttonArea.replaceChildren();
+                };
+            };
+        })();
+
+        const player = document.getElementById('player');
+        const canvas = document.getElementById('canvas');
+        const context_2d = canvas.getContext('2d')
+        context_2d.scale(-1,1);
+        context_2d.translate(-canvas.width, 0);
+
+        const constraints = { video: { width: 640, height: 480 } };
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        navigator.mediaDevices.getUserMedia(constraints)
+            .then((stream) => {
+                player.srcObject = stream;
+                //hands.send({ image: player });
+            })
+            .catch((err) => console.error("Error accessing camera:", err));
+
+        function onResults(results) {
+            context_2d.clearRect(0, 0, canvas.width, canvas.height);
+            context_2d.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+            context_2d.scale(-1,1);
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    window.drawConnectors(context_2d, landmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 5 });
+                    window.drawLandmarks(context_2d, landmarks, { color: '#FF0000', lineWidth: 2 });
+                }
+            }
+            requestAnimationFrame(() => hands.send({ image: player }));
+        }
+    </script>
+</body>
+</html>
