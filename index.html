@@ -173,7 +173,7 @@
         navigator.mediaDevices.getUserMedia(constraints)
             .then((stream) => {
                 player.srcObject = stream;
-                //hands.send({ image: player });
+                hands.send({ image: player });
             })
             .catch((err) => console.error("Error accessing camera:", err));
 
